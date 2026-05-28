@@ -9,7 +9,7 @@ if __name__ == "__main__":
     print("Loading model...")
     model = Small_LLM_Model()
 
-    prompt = "ali is a football player"
+    prompt = "hitler"
     input_ids = model.encode(prompt).tolist()[0]
     # print(f"Input IDs: {input_ids}")
     # for id in input_ids:
@@ -40,7 +40,10 @@ if __name__ == "__main__":
     # for i in range(20):
     #     print(f"logits score :{scored[i][0]:.2f}/ token from vocab:{scored[i][1]}")
     # the hight score the predact of the next turn
-    for i in range(50):
+    logits = model.get_logits_from_input_ids(input_ids)
+    next_id = int(np.argmax(logits))
+    input_ids.append(next_id)
+    for i in range(10):
         print(f"next token ID: {next_id}")
         print(f"next token: '{id_to_token.get(next_id, '<UNK>')}'")
         logits = model.get_logits_from_input_ids(input_ids)

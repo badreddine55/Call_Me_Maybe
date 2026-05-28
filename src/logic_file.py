@@ -10,6 +10,7 @@ from src.parsing import Parser
 class FunctionsDict:
     def __init__(self):
         self.parser = Parser()
+        self.model = Small_LLM_Model() 
 
     def functions_list(self, path: str):
         new_list_functions = []
@@ -60,6 +61,10 @@ class FunctionsDict:
             JSON response:
             {{\"function_name\": \""""
 
+    def get_logits(self, input_ids):
+        logits = self.model.get_logits_from_input_ids(input_ids)
+        next_id = int(np.argmax(logits))
+        print(next_id)
 
 
         
