@@ -133,6 +133,9 @@ class Main:
             if not self._save(results):
                 sys.exit(1)
 
+    def load_tokenizer(self):
+        pass
+
 
 if __name__ == "__main__":
     Main().run()
