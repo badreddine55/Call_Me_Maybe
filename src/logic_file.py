@@ -8,9 +8,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(
     os.path.dirname(__file__), '..', 'llm_sdk'
 ))
-from llm_sdk import Small_LLM_Model
-from src.parsing import Parser
-from itertools import zip_longest
+from llm_sdk import Small_LLM_Model  # noqa: E402
+from src.parsing import Parser  # noqa: E402
 
 
 class FunctionsDict:
@@ -61,18 +60,20 @@ class FunctionsDict:
         """Build the prompt string for the LLM."""
         functions_str = "\n".join(functions_list)
         return (
-            f"You are a function calling assistant. "
-            f"Your job is to select the correct function and "
-            f"extract the parameters from the user request. "
-            f"You must ONLY respond with a JSON object, "
-            f"nothing else.\n\n"
+            "You are a function calling assistant. "
+            "Your job is to select the correct function and "
+            "extract the parameters from the user request. "
+            "You must ONLY respond with a JSON object, "
+            "nothing else.\n\n"
             f"Available functions:\n{functions_str}\n\n"
-            f"Rules:\n"
-            f"- Choose the most appropriate function\n"
-            f"- Extract exact parameter values\n"
-            f"- Return ONLY valid JSON\n\n"
+            "Rules:\n"
+            "- Choose the most appropriate function\n"
+            "- Extract exact parameter values\n"
+            "- Return ONLY valid JSON\n"
+            "- For regex parameters, generate a valid regex "
+            "pattern (e.g use [...] not ...)\n\n"
             f"User request: {user_request}\n\n"
-            f'JSON response:\n{{"function_name": "'
+            'JSON response:\n{"function_name": "'
         )
 
     def get_logits(self, input_ids: list[int]) -> list[float]:
@@ -83,7 +84,7 @@ class FunctionsDict:
         self,
         list_func_tokens: list[list[int]],
         input_ids: list[int]
-    ) -> list[int]:
+    ) -> list[int] | None:
         """Extract the function name using constrained decoding."""
         alive = set(range(len(list_func_tokens)))
         expected_fun: list[int] = []
@@ -127,15 +128,103 @@ class FunctionsDict:
                 if expected_fun == candidate:
                     return expected_fun
 
-        return expected_fun
+        return expected_fun if expected_fun else None
 
-    def _get_allowed_subsequent_number_tokens(self) -> set[int]:
+    def _get_number_tokens(self) -> set[int]:
         """Get token IDs valid after the first token of a number."""
         allowed: set[int] = set()
         for c in "0123456789.":
             tokens = self.model.encode(c).tolist()[0]
             allowed.update(tokens)
         return allowed
+
+    def _extract_string(
+        self, input_ids: list[int]
+    ) -> str:
+        """Extract a string parameter using constrained decoding."""
+        str_value: list[int] = []
+        input_ids.extend(self.model.encode(' "').tolist()[0])
+        previous_token_text = None
+
+        while True:
+            logits = self.get_logits(input_ids)
+            token = int(np.argmax(logits))
+            token_text = self.model.decode([token])
+
+            if '"' in token_text:
+                if previous_token_text == "\\":
+                    input_ids.append(token)
+                    str_value.append(token)
+                    previous_token_text = token_text
+                    continue
+                new_text = token_text.split('"')[0]
+                if new_text:
+                    tokens = self.model.encode(new_text).tolist()[0]
+                    input_ids.extend(tokens)
+                    str_value.extend(tokens)
+                break
+
+            input_ids.append(token)
+            str_value.append(token)
+            previous_token_text = token_text
+
+        result = self.model.decode(str_value).strip()
+        result = result.replace("\\\\", "\\")
+        input_ids.extend(self.model.encode('"').tolist()[0])
+        return result
+
+    def _extract_number(
+        self, input_ids: list[int], is_integer: bool
+    ) -> int | float:
+        """Extract a number parameter using constrained decoding."""
+        value: list[int] = []
+
+        while True:
+            logits = self.get_logits(input_ids)
+            token = int(np.argmax(logits))
+            token_text = self.model.decode([token])
+
+            if any(c in token_text for c in {",", "}"}):
+                digit_part = (
+                    token_text.split(",")[0]
+                    .split("}")[0]
+                    .strip()
+                )
+                if digit_part:
+                    input_ids.extend(
+                        self.model.encode(digit_part).tolist()[0]
+                    )
+                break
+
+            input_ids.append(token)
+            value.append(token)
+
+        raw = self.model.decode(value).strip().strip('"')
+        return int(raw) if is_integer else float(raw)
+
+    def _extract_boolean(
+        self, input_ids: list[int]
+    ) -> bool:
+        """Extract a boolean parameter using constrained decoding."""
+        true_tokens = self.model.encode("true").tolist()[0]
+        false_tokens = self.model.encode("false").tolist()[0]
+        logits = np.array(self.get_logits(input_ids))
+        allowed: set[int] = {true_tokens[0], false_tokens[0]}
+
+        for token_id in range(len(logits)):
+            if token_id not in allowed:
+                logits[token_id] = -float('inf')
+
+        first_token = int(np.argmax(logits))
+
+        if first_token == true_tokens[0]:
+            for tok in true_tokens[1:]:
+                input_ids.append(tok)
+            return True
+
+        for tok in false_tokens[1:]:
+            input_ids.append(tok)
+        return False
 
     def extract_function_params(
         self,
@@ -149,94 +238,30 @@ class FunctionsDict:
         function = next(
             f for f in self.functions if f["name"] == function_name
         )
-        parameters = function["parameters"]
-        params = list(parameters.items())
+        params = list(function["parameters"].items())
         result: dict[str, Any] = {}
-        allowed = self._get_allowed_subsequent_number_tokens()
 
         for i, (param_name, param_info) in enumerate(params):
             if i > 0:
-                input_ids.extend(
-                    self.model.encode(", ").tolist()[0]
-                )
+                input_ids.extend(self.model.encode(", ").tolist()[0])
 
             input_ids.extend(
                 self.model.encode(f'"{param_name}":').tolist()[0]
             )
+            ptype = param_info["type"]
 
-            if param_info["type"] == "string":
-                value: list[int] = []
-                input_ids.extend(
-                    self.model.encode('"').tolist()[0]
+            if ptype == "string":
+                result[param_name] = self._extract_string(input_ids)
+            elif ptype == "number":
+                result[param_name] = self._extract_number(
+                    input_ids, is_integer=False
                 )
-                while True:
-                    logits = self.get_logits(input_ids)
-                    for token_id in range(len(logits)):
-                        if token_id not in allowed:
-                            logits[token_id] = -float('inf')
-                    token = int(np.argmax(logits))
-                    token_text = self.model.decode([token])
-                    if '"' in token_text:
-                        break
-                    input_ids.append(token)
-                    value.append(token)
-                result[param_name] = self.model.decode(value)
-                input_ids.extend(
-                    self.model.encode('"').tolist()[0]
+            elif ptype == "integer":
+                result[param_name] = self._extract_number(
+                    input_ids, is_integer=True
                 )
+            elif ptype == "boolean":
+                result[param_name] = self._extract_boolean(input_ids)
 
-            elif param_info["type"] == "number" or param_info["type"] == "integer":
-                allowed_tokens = ()
-                value: list[int] = []
-                while True:
-                    logits = self.get_logits(input_ids)
-                    token = int(np.argmax(logits))
-                    token_text = self.model.decode([token])
-                    if any(c in token_text for c in {",", "}"}):
-                        digit_part = (
-                            token_text.split(",")[0]
-                            .split("}")[0]
-                            .strip()
-                        )
-                        if digit_part:
-                            input_ids.extend(
-                                self.model.encode(
-                                    digit_part
-                                ).tolist()[0]
-                            )
-                        break
-                    input_ids.append(token)
-                    value.append(token)
-                if param_info["type"] == "number":
-                    result[param_name] = float(
-                        self.model.decode(value)
-                    )
-                else:
-                    result[param_name] = self.model.decode(value)
-
-            elif param_info["type"] == "boolean":
-                true_tokens = (
-                    self.model.encode("true").tolist()[0]
-                )
-                false_tokens = (
-                    self.model.encode("false").tolist()[0]
-                )
-                logits = np.array(self.get_logits(input_ids))
-                allowed = {true_tokens[0], false_tokens[0]}
-                for token_id in range(len(logits)):
-                    if token_id not in allowed:
-                        logits[token_id] = -float('inf')
-                first_token = int(np.argmax(logits))
-                if first_token == true_tokens[0]:
-                    for tok in true_tokens[1:]:
-                        input_ids.append(tok)
-                    result[param_name] = True
-                else:
-                    for tok in false_tokens[1:]:
-                        input_ids.append(tok)
-                    result[param_name] = False
-
-        input_ids.extend(
-            self.model.encode("}}").tolist()[0]
-        )
+        input_ids.extend(self.model.encode("}}").tolist()[0])
         return result
