@@ -5,21 +5,50 @@ import sys
 import json
 import argparse
 from typing import Any
+from pydantic import BaseModel, field_validator
 from src.parsing import ParseError
 from src.logic_file import FunctionsDict
+from src.tokenizer import Tokenizer
+
+
+class MainConfig(BaseModel):
+    """Pydantic model for validating main configuration."""
+
+    functions_definition: str
+    input: str
+    output: str
+
+    @field_validator("functions_definition", "input")
+    @classmethod
+    def must_be_json(cls, v: str) -> str:
+        """Validate that the path ends with .json."""
+        if not v.endswith(".json"):
+            raise ValueError(f"Expected a .json file, got: {v}")
+        return v
+
+    @field_validator("output")
+    @classmethod
+    def output_must_be_json(cls, v: str) -> str:
+        """Validate that the output path ends with .json."""
+        if not v.endswith(".json"):
+            raise ValueError(f"Output must be a .json file, got: {v}")
+        return v
 
 
 class Main:
     """Main class for the function calling assistant."""
 
-    DEFAULT_FUNCTIONS = "data/input/functions_definition.json"
-    DEFAULT_INPUT = "data/input/function_calling_tests.json"
-    DEFAULT_OUTPUT = "data/output/output.json"
+    DEFAULT_FUNCTIONS: str = "data/input/functions_definition.json"
+    DEFAULT_INPUT: str = "data/input/function_calling_tests.json"
+    DEFAULT_OUTPUT: str = "data/output/function_calling_results.json"
 
     def __init__(self) -> None:
         """Initialize with FunctionsDict and parsed arguments."""
-        self.args = self._parse_args()
-        self.fun = FunctionsDict()
+        self.args: argparse.Namespace = self._parse_args()
+        self.config: MainConfig = self._validate_config()
+        self.fun: FunctionsDict = FunctionsDict()
+        self.my_decode: Any = None
+        self.my_encode: Any = None
 
     def _parse_args(self) -> argparse.Namespace:
         """Parse command line arguments."""
@@ -43,11 +72,22 @@ class Main:
         )
         return parser.parse_args()
 
+    def _validate_config(self) -> MainConfig:
+        """Validate parsed arguments using pydantic."""
+        try:
+            return MainConfig(
+                functions_definition=self.args.functions_definition,
+                input=self.args.input,
+                output=self.args.output
+            )
+        except Exception as e:
+            raise ParseError(f"Invalid configuration: {e}") from e
+
     def _setup_output(self) -> bool:
         """Create output directory if needed."""
         try:
             os.makedirs(
-                os.path.dirname(self.args.output), exist_ok=True
+                os.path.dirname(self.config.output), exist_ok=True
             )
             return True
         except OSError as e:
@@ -57,7 +97,7 @@ class Main:
     def _save(self, results: list[Any]) -> bool:
         """Write results to output JSON file."""
         try:
-            with open(self.args.output, "w") as f:
+            with open(self.config.output, "w") as f:
                 json.dump(results, f, indent=4)
             return True
         except OSError as e:
@@ -71,28 +111,44 @@ class Main:
         functions_names: list[list[int]]
     ) -> dict[str, Any] | None:
         """Process a single prompt and return result or None on error."""
-        input_ids = self.fun.model.encode(
-            self.fun.build_prompt(prompt, list_func)
-        ).tolist()[0]
+        try:
+            input_ids: list[int] = self.my_encode(
+                self.fun.build_prompt(prompt, list_func)
+            )
+        except Exception as e:
+            raise ParseError(f"Failed to encode prompt: {e}") from e
 
-        function_name_tokens = self.fun.extract_function_name(
-            functions_names, input_ids
-        )
+        try:
+            function_name_tokens: list[int] | None = (
+                self.fun.extract_function_name(functions_names, input_ids)
+            )
+        except Exception as e:
+            raise ParseError(
+                f"Failed to extract function name: {e}"
+            ) from e
 
         if function_name_tokens is None:
             print(f"ERROR: No matching function for: '{prompt}'")
             return None
 
-        function_name = self.fun.model.decode(function_name_tokens)
+        try:
+            function_name: str = self.my_decode(function_name_tokens)
+        except Exception as e:
+            raise ParseError(
+                f"Failed to decode function name: {e}"
+            ) from e
 
-        dict_prompt = self.fun.extract_function_params(
-            function_name, input_ids
-        )
+        try:
+            dict_prompt: dict[str, Any] = self.fun.extract_function_params(
+                function_name, input_ids
+            )
+        except Exception as e:
+            raise ParseError(f"Failed to extract parameters: {e}") from e
 
         return {
             "prompt": prompt,
-            "name": function_name,
-            "parameters": dict_prompt
+            "fn_name": function_name,
+            "args": dict_prompt
         }
 
     def run(self) -> None:
@@ -102,14 +158,14 @@ class Main:
 
         try:
             list_func, functions_names = self.fun.functions_list(
-                self.args.functions_definition
+                self.config.functions_definition
             )
         except ParseError as e:
             print(f"ERROR loading functions: {e}")
             sys.exit(1)
 
         try:
-            prompts = self.fun.prompt_list(self.args.input)
+            prompts: list[str] = self.fun.prompt_list(self.config.input)
         except ParseError as e:
             print(f"ERROR loading prompts: {e}")
             sys.exit(1)
@@ -118,24 +174,36 @@ class Main:
 
         for prompt in prompts:
             try:
-                result = self._process_prompt(
+                result: dict[str, Any] | None = self._process_prompt(
                     prompt, list_func, functions_names
                 )
                 if result is None:
                     continue
                 print(result)
                 results.append(result)
-
-            except Exception as e:
+            except ParseError as e:
                 print(f"ERROR processing prompt '{prompt}': {e}")
                 continue
 
             if not self._save(results):
                 sys.exit(1)
 
-    def load_tokenizer(self):
-        pass
+    def load_tokenizer(self) -> None:
+        """Load tokenizer encode and decode methods."""
+        try:
+            tc: Tokenizer = Tokenizer(self.fun)
+            self.my_decode = tc.my_decode
+            self.my_encode = tc.my_encode
+        except Exception as e:
+            raise ParseError(f"Failed to load tokenizer: {e}") from e
 
 
 if __name__ == "__main__":
-    Main().run()
+    try:
+        main = Main()
+        main.fun.load_tokenizer()
+        main.load_tokenizer()
+        main.run()
+    except (ParseError, KeyboardInterrupt) as e:
+        print(f"ERROR: Keyboard Interrupt or {e}")
+        sys.exit(1)
