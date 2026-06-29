@@ -147,8 +147,8 @@ class Main:
 
         return {
             "prompt": prompt,
-            "fn_name": function_name,
-            "args": dict_prompt
+            "name": function_name,
+            "parameters": dict_prompt
         }
 
     def run(self) -> None:
@@ -194,6 +194,10 @@ class Main:
             tc: Tokenizer = Tokenizer(self.fun)
             self.my_decode = tc.my_decode
             self.my_encode = tc.my_encode
+            # inputs_1 = self.my_encode("hello this is test €")
+            # inputs_2 = self.fun.model.encode(
+            # "hello this is test €").tolist()[0]
+            # print(inputs_1 == inputs_2)
         except Exception as e:
             raise ParseError(f"Failed to load tokenizer: {e}") from e
 
