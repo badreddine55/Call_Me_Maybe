@@ -3,7 +3,6 @@
 import os
 import sys
 import json
-import argparse
 from typing import Any
 from pydantic import BaseModel, field_validator
 from src.parsing import ParseError
@@ -43,42 +42,21 @@ class Main:
     DEFAULT_OUTPUT: str = "data/output/function_calling_results.json"
 
     def __init__(self) -> None:
-        """Initialize with FunctionsDict and parsed arguments."""
-        self.args: argparse.Namespace = self._parse_args()
+        """Initialize with FunctionsDict and configuration."""
         self.config: MainConfig = self._validate_config()
         self.fun: FunctionsDict = FunctionsDict()
         self.my_decode: Any = None
         self.my_encode: Any = None
 
-    def _parse_args(self) -> argparse.Namespace:
-        """Parse command line arguments."""
-        parser = argparse.ArgumentParser(
-            description="Function calling assistant"
-        )
-        parser.add_argument(
-            "--functions_definition",
-            default=self.DEFAULT_FUNCTIONS,
-            help="Path to function definitions JSON file"
-        )
-        parser.add_argument(
-            "--input",
-            default=self.DEFAULT_INPUT,
-            help="Path to input prompts JSON file"
-        )
-        parser.add_argument(
-            "--output",
-            default=self.DEFAULT_OUTPUT,
-            help="Path to output JSON file"
-        )
-        return parser.parse_args()
-
     def _validate_config(self) -> MainConfig:
-        """Validate parsed arguments using pydantic."""
+        """Validate configuration from environment variables."""
         try:
             return MainConfig(
-                functions_definition=self.args.functions_definition,
-                input=self.args.input,
-                output=self.args.output
+                functions_definition=os.environ.get(
+                    "FUNCTIONS_DEFINITION", self.DEFAULT_FUNCTIONS
+                ),
+                input=os.environ.get("INPUT", self.DEFAULT_INPUT),
+                output=os.environ.get("OUTPUT", self.DEFAULT_OUTPUT)
             )
         except Exception as e:
             raise ParseError(f"Invalid configuration: {e}") from e
@@ -194,10 +172,6 @@ class Main:
             tc: Tokenizer = Tokenizer(self.fun)
             self.my_decode = tc.my_decode
             self.my_encode = tc.my_encode
-            # inputs_1 = self.my_encode("hello this is test €")
-            # inputs_2 = self.fun.model.encode(
-            # "hello this is test €").tolist()[0]
-            # print(inputs_1 == inputs_2)
         except Exception as e:
             raise ParseError(f"Failed to load tokenizer: {e}") from e
 
