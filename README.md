@@ -146,10 +146,11 @@ Each parameter type uses a dedicated extraction loop:
 
 ### Custom Tokenizer (Bonus)
 
-**`my_encode(text)`** — greedy longest-match BPE:
+**`my_encode(text)`** — rank-priority BPE merging:
 - Replaces spaces with `Ġ` and newlines with `Ċ` (standard BPE conventions).
-- Scans left-to-right, at each position tries the longest possible substring that exists in the vocabulary, appends its token ID, and advances.
-- Unknown characters are skipped.
+- Initializes each character as its own symbol, falling back to UTF-8 byte tokens (e.g. `<0xE2>`) for characters not directly in the vocabulary.
+- Repeatedly scans all adjacent symbol pairs and merges the pair with the lowest rank in `merges.txt` (i.e. the merge learned earliest), applying it across the whole sequence, until no more valid merges remain.
+- Looks up the final symbols in the vocabulary and emits their token IDs, falling back to UTF-8 byte tokens for any symbol not found.
 
 **`my_decode(token_ids)`** — converts token IDs back to text:
 - Looks up each ID in the reverse vocabulary.

@@ -116,6 +116,13 @@ class Main:
                 f"Failed to decode function name: {e}"
             ) from e
 
+        if function_name == "fn_uknown":
+            return {
+                "prompt": prompt,
+                "name": "__NO_FUNCTION_MATCH__",
+                "parameters": {}
+            }
+
         try:
             dict_prompt: dict[str, Any] = self.fun.extract_function_params(
                 function_name, input_ids

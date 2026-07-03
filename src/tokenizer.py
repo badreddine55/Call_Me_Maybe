@@ -138,15 +138,6 @@ class Tokenizer:
                         f"Token ID {token_id} not found in vocabulary"
                     )
                 token_str: str = self.id_to_token[token_id]
-
-                # if token_str.startswith("<0x") and token_str.endswith(">"):
-                #     try:
-                #         byte_val: int = int(token_str[3:-1], 16)
-                #         byte_buffer += bytes([byte_val])
-                #     except ValueError:
-                #         byte_buffer += b"?"
-                #         continue
-                # else:
                 if byte_buffer:
                     result += byte_buffer.decode(
                         "utf-8", errors="replace"

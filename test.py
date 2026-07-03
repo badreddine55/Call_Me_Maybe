@@ -13,6 +13,9 @@ from llm_sdk import Small_LLM_Model  # noqa: E402
 from src.parsing import Parser, ParseError  # noqa: E402
 
 
+NO_FUNCTION_NAME: str = "__no_function__"
+
+
 class FunctionParam(BaseModel):
     """Pydantic model for validating a single function parameter."""
 
@@ -77,7 +80,15 @@ class FunctionsDict:
     def functions_list(
         self, path: str
     ) -> tuple[list[str], list[list[int]]]:
-        """Load and format functions from a JSON file."""
+        """Load and format functions from a JSON file.
+
+        The returned ``functions_names`` list always includes a final
+        entry for ``NO_FUNCTION_NAME`` (``__no_function__``), tokenized
+        the same way as every real function name, so that "no function
+        matches this request" is a genuine candidate the model can
+        select during ``extract_function_name`` rather than a fallback
+        handled outside the selection logic.
+        """
         try:
             new_list_functions: list[str] = []
             functions_names: list[list[int]] = []
@@ -97,18 +108,15 @@ class FunctionsDict:
                 line: str = (
                     f"function_name: {validated.name}({params_str}) "
                     f":returns({validated.returns.get('type', '')}) "
-                    f":description ({validated.description})"
+                    f":description({validated.description})"
                 )
                 new_list_functions.append(line)
+
+            # Add __no_function__ as a real, scoreable candidate.
             functions_names.append(
-                self.tokenizer.my_encode("fn_uknown")
+                self.tokenizer.my_encode(NO_FUNCTION_NAME)
             )
-            line: str = (
-                    "function_name: fn_uknown"
-                    " :description (Fallback function to use when no other"
-                    " function is appropriate for the user's prompt.)"
-            )
-            new_list_functions.append(line)
+
             return new_list_functions, functions_names
         except ParseError:
             raise
@@ -137,9 +145,9 @@ class FunctionsDict:
             f"Available functions:\n{functions_str}\n\n"
             f"User request: {user_request}\n\n"
             "- For regex parameters, generate a valid regex "
-            "- Return fn_uknown only if none of the listed "
-            "functions can handle the user prompt.\n\n"
             "pattern (e.g use [...] not ...)\n\n"
+            "- Return __no_function__ only if none of the listed "
+            "functions can handle the request.\n\n"
             'JSON response:\n{"function_name": "'
         )
 
@@ -155,53 +163,47 @@ class FunctionsDict:
         list_func_tokens: list[list[int]],
         input_ids: list[int]
     ) -> list[int] | None:
-        """Extract the function name using constrained decoding."""
+        """Select the function name by scoring full candidate sequences.
+
+        Each candidate in ``list_func_tokens`` (including the
+        ``__no_function__`` candidate appended in ``functions_list``)
+        is scored independently via teacher forcing: the model is
+        walked through each candidate's exact tokens, and the
+        log-probability of every token is accumulated and averaged
+        over the candidate's length. This avoids the greedy-fork
+        problem of committing to a single token at a shared position,
+        since every candidate is evaluated fully and in isolation
+        before any comparison is made. The highest-scoring candidate
+        wins, whether that is a real function or __no_function__.
+        """
         try:
-            alive: set[int] = set(range(len(list_func_tokens)))
-            expected_fun: list[int] = []
-            pos: int = 0
+            best_score: float = -float('inf')
+            best_candidate: list[int] | None = None
 
-            while alive:
+            for candidate in list_func_tokens:
+                if not candidate:
+                    continue
 
-                allowed_tokens: set[int] = set()
-                still_alive: set[int] = set()
-                for idx in alive:
-                    if pos < len(list_func_tokens[idx]):
-                        allowed_tokens.add(list_func_tokens[idx][pos])
-                        still_alive.add(idx)
+                total_log_prob: float = 0.0
+                current_ids: list[int] = list(input_ids)
 
-                if not allowed_tokens:
-                    break
-
-                if len(allowed_tokens) == 1:
-                    token: int = next(iter(allowed_tokens))
-                else:
+                for token_id in candidate:
                     logits: np.ndarray = np.array(
-                        self.get_logits(input_ids)
+                        self.get_logits(current_ids)
                     )
-                    for token_id in range(len(logits)):
-                        if token_id not in allowed_tokens:
-                            logits[token_id] = -float('inf')
-                    token = int(np.argmax(logits))
+                    log_probs: np.ndarray = (
+                        logits - np.logaddexp.reduce(logits)
+                    )
+                    total_log_prob += float(log_probs[token_id])
+                    current_ids.append(token_id)
 
-                expected_fun.append(token)
-                input_ids.append(token)
+                avg_log_prob: float = total_log_prob / len(candidate)
 
-                new_alive: set[int] = set()
-                for idx in still_alive:
-                    if (
-                        pos < len(list_func_tokens[idx])
-                        and list_func_tokens[idx][pos] == token
-                    ):
-                        new_alive.add(idx)
-                alive = new_alive
-                pos += 1
+                if avg_log_prob > best_score:
+                    best_score = avg_log_prob
+                    best_candidate = candidate
 
-                for candidate in list_func_tokens:
-                    if expected_fun == candidate:
-                        return expected_fun
-
-            return expected_fun if expected_fun else None
+            return best_candidate
         except ParseError:
             raise
         except Exception as e:
