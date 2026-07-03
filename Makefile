@@ -3,9 +3,9 @@
 # Use a per-user cache/venv location instead of the shared /tmp,
 # which can be owned by another user on shared school machines
 # and cause "Permission denied" errors on `uv sync`.
-export HF_HOME=$(HOME)/goinfre/hf_home
-export UV_CACHE_DIR=$(HOME)/goinfre/uv_cache_dir
-export UV_PROJECT_ENVIRONMENT=$(HOME)/goinfre/uv_venv
+export HF_HOME=/tmp/$(USER)_hf_home
+export UV_CACHE_DIR=/tmp/$(USER)_uv_cache
+export UV_PROJECT_ENVIRONMENT=/tmp/$(USER)_uv_venv
 
 parameters =    --functions_definition data/input/functions_definition.json \
 				--input data/input/function_calling_tests.json \

@@ -9,7 +9,7 @@ from pydantic import BaseModel, field_validator
 sys.path.insert(0, os.path.join(
     os.path.dirname(__file__), '..', 'llm_sdk'
 ))
-from llm_sdk import Small_LLM_Model  # noqa: E402
+from llm_sdk import Small_LLM_Model  # type: ignore[attr-defined]  # noqa: E402
 from src.parsing import Parser, ParseError  # noqa: E402
 
 
@@ -103,12 +103,12 @@ class FunctionsDict:
             functions_names.append(
                 self.tokenizer.my_encode("fn_uknown")
             )
-            line: str = (
+            fallback_line: str = (
                     "function_name: fn_uknown"
                     " :description (Fallback function to use when no other"
                     " function is appropriate for the user's prompt.)"
             )
-            new_list_functions.append(line)
+            new_list_functions.append(fallback_line)
             return new_list_functions, functions_names
         except ParseError:
             raise
@@ -146,7 +146,10 @@ class FunctionsDict:
     def get_logits(self, input_ids: list[int]) -> list[float]:
         """Get logits from the model for the given input IDs."""
         try:
-            return self.model.get_logits_from_input_ids(input_ids)
+            logits: list[float] = self.model.get_logits_from_input_ids(
+                input_ids
+            )
+            return logits
         except Exception as e:
             raise ParseError(f"Failed to get logits: {e}") from e
 
